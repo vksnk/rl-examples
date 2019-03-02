@@ -27,12 +27,9 @@ EPSILON_FINAL = 0.02
 def build_dq_net(n_actions):
     model = tf.keras.Sequential()
 
-    model.add(layers.Conv2D(filters=32, kernel_size=8, strides=4, input_shape=(84, 84, 4)))
-    model.add(layers.ReLU())
-    model.add(layers.Conv2D(filters=64, kernel_size=4, strides=2))
-    model.add(layers.ReLU())
-    model.add(layers.Conv2D(filters=64, kernel_size=3, strides=1))
-    model.add(layers.ReLU())
+    model.add(layers.Conv2D(filters=32, kernel_size=8, strides=4, input_shape=(84, 84, 4), activation='relu', data_format = "channels_last"))
+    model.add(layers.Conv2D(filters=64, kernel_size=4, strides=2, activation='relu', data_format = "channels_last"))
+    model.add(layers.Conv2D(filters=64, kernel_size=3, strides=1, activation='relu', data_format = "channels_last"))
     model.add(layers.Flatten())
     model.add(layers.Dense(512))
     model.add(layers.ReLU())
@@ -75,7 +72,7 @@ class Agent:
         if np.random.random() < epsilon:
             action = env.action_space.sample()
         else:
-            state_a = tf.convert_to_tensor([self.state])
+            state_a = np.expand_dims(self.state, axis=0)
             q_vals_v = net(state_a)
             act_v = tf.argmax(q_vals_v, axis = 1)
             action = act_v.numpy()[0]
@@ -99,18 +96,18 @@ def calc_loss(batch, net, target_net):
 
     states_v = tf.convert_to_tensor(states)
     next_states_v = tf.convert_to_tensor(next_states)
-    actions_v = tf.convert_to_tensor(actions)
-    rewards_v = tf.convert_to_tensor(rewards)
-    done_mask = tf.convert_to_tensor(dones)
+    # actions_v = tf.convert_to_tensor(actions)
+    # rewards_v = tf.convert_to_tensor(rewards)
+    # done_mask = tf.convert_to_tensor(dones)
 
-    action_row_indices_v = tf.range(tf.shape(actions_v)[0])
-    actions_v = tf.stack([action_row_indices_v, actions_v], axis=1)
+    action_row_indices_v = range(actions.shape[0])
+    actions_v = np.stack([action_row_indices_v, actions], axis=1)
 
     with tf.GradientTape() as tape:
         next_state_values = tf.reduce_max(target_net(next_states_v), axis=1)
-        next_state_values = tf.multiply(next_state_values, tf.subtract(1.0, done_mask))
+        next_state_values = tf.multiply(next_state_values, tf.subtract(1.0, dones))
 
-        expected_state_action_values = next_state_values * GAMMA + rewards_v
+        expected_state_action_values = next_state_values * GAMMA + rewards
 
         state_action_v = net(states_v, training = True)
         state_action_v = tf.gather_nd(state_action_v, actions_v)
@@ -127,7 +124,7 @@ def play_and_visualize_game(env):
     while not is_done:
         start_ts = time.time()
         env.render()
-        if False:
+        if True:
             action = env.action_space.sample()
         else:
             state_a = tf.convert_to_tensor([self.state])
@@ -174,6 +171,8 @@ if __name__ == "__main__":
     ts_frame = 0
     ts = time.time()
     best_mean_reward = None
+    speed = 0
+    mean_reward = 0
 
     while True:
         global_step.assign_add(1)
@@ -191,10 +190,6 @@ if __name__ == "__main__":
                 frame_idx, len(total_rewards), mean_reward, epsilon,
                 speed
             ))
-            tf.contrib.summary.scalar("epsilon", epsilon, step=global_step)
-            tf.contrib.summary.scalar("speed", speed, step=global_step)
-            tf.contrib.summary.scalar("reward_100", mean_reward, step=global_step)
-            tf.contrib.summary.scalar("reward", reward, step=global_step)
             if best_mean_reward is None or best_mean_reward < mean_reward:
                 net.save(args.env + "-best.dat")
                 if best_mean_reward is not None:
@@ -203,6 +198,12 @@ if __name__ == "__main__":
             if mean_reward > args.reward:
                 print("Solved in %d frames!" % frame_idx)
                 break
+
+        with tf.contrib.summary.record_summaries_every_n_global_steps(5000):
+            tf.contrib.summary.scalar("epsilon", epsilon, step=global_step)
+            tf.contrib.summary.scalar("speed", speed, step=global_step)
+            tf.contrib.summary.scalar("reward_100", mean_reward, step=global_step)
+            # tf.contrib.summary.scalar("reward", reward, step=global_step)
 
         if len(buffer) < REPLAY_START_SIZE:
             continue
