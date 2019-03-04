@@ -7,6 +7,7 @@ import collections
 
 import tensorflow as tf
 import tensorflow.keras.layers as layers
+import tensorflow.contrib.eager as tfe
 
 tf.enable_eager_execution()
 
@@ -55,6 +56,11 @@ class ExperienceBuffer:
         return np.array(states), np.array(actions, dtype=np.int32), np.array(rewards, dtype=np.float32), \
                np.array(dones, dtype=np.float32), np.array(next_states)
 
+@tfe.defun
+def get_next_action(net, state):
+    state_a = tf.expand_dims(state, axis=0)
+    q_vals_v = net(state_a)
+    return tf.argmax(q_vals_v, axis = 1)
 
 class Agent:
     def __init__(self, env, exp_buffer):
@@ -66,23 +72,20 @@ class Agent:
         self.state = env.reset()
         self.total_reward = 0.0
 
-    def play_step(self, net, epsilon=0.0, device="cpu"):
+    def play_step(self, net, epsilon=0.0):
         done_reward = None
 
         if np.random.random() < epsilon:
             action = env.action_space.sample()
         else:
-            state_a = np.expand_dims(self.state, axis=0)
-            q_vals_v = net(state_a)
-            act_v = tf.argmax(q_vals_v, axis = 1)
-            action = act_v.numpy()[0]
+            action = get_next_action(net, self.state).numpy()[0]
 
         # do step in the environment
         new_state, reward, is_done, _ = self.env.step(action)
         self.total_reward += reward
         new_state = new_state
 
-        exp = Experience(self.state, action, reward, is_done, new_state)
+        exp = Experience(self.state, action, reward, not is_done, new_state)
         self.exp_buffer.append(exp)
         self.state = new_state
         if is_done:
@@ -90,30 +93,28 @@ class Agent:
             self._reset()
         return done_reward
 
+@tfe.defun
+def compute_loss(net, target_net, states, actions, rewards, dones, next_states):
+    action_row_indices_v = tf.range(tf.shape(actions)[0])
+    actions_v = tf.stack([action_row_indices_v, actions], axis=1)
+
+    next_state_values = tf.reduce_max(target_net(next_states), axis=1)
+
+    expected_state_action_values = dones * next_state_values * GAMMA + rewards
+
+    state_action_v = net(states)
+    state_action_v = tf.gather_nd(state_action_v, actions_v)
+
+    loss_value = tf.reduce_mean(tf.squared_difference(state_action_v, expected_state_action_values))
+
+    return loss_value
 
 def calc_loss(batch, net, target_net):
     states, actions, rewards, dones, next_states = batch
 
-    states_v = tf.convert_to_tensor(states)
-    next_states_v = tf.convert_to_tensor(next_states)
-    # actions_v = tf.convert_to_tensor(actions)
-    # rewards_v = tf.convert_to_tensor(rewards)
-    # done_mask = tf.convert_to_tensor(dones)
-
-    action_row_indices_v = range(actions.shape[0])
-    actions_v = np.stack([action_row_indices_v, actions], axis=1)
-
     with tf.GradientTape() as tape:
-        next_state_values = tf.reduce_max(target_net(next_states_v), axis=1)
-        next_state_values = tf.multiply(next_state_values, tf.subtract(1.0, dones))
+        loss_value = compute_loss(net, target_net, states, actions, rewards, dones, next_states)
 
-        expected_state_action_values = next_state_values * GAMMA + rewards
-
-        state_action_v = net(states_v, training = True)
-        state_action_v = tf.gather_nd(state_action_v, actions_v)
-
-        loss_value = tf.losses.mean_squared_error(state_action_v, expected_state_action_values) 
-    
     return tape.gradient(loss_value, net.trainable_variables) 
 
 def play_and_visualize_game(env):
@@ -156,15 +157,12 @@ if __name__ == "__main__":
     print(net.inputs)
 
     global_step = tf.train.get_or_create_global_step()
-    logdir = "./tb/"
-    writer = tf.contrib.summary.create_file_writer(logdir)
+    writer = tf.contrib.summary.create_file_writer("./tb/")
     writer.set_as_default()
 
     buffer = ExperienceBuffer(REPLAY_SIZE)
     agent = Agent(env, buffer)
     epsilon = EPSILON_START
-
-    optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE)
 
     total_rewards = []
     frame_idx = 0
@@ -174,45 +172,52 @@ if __name__ == "__main__":
     speed = 0
     mean_reward = 0
 
-    while True:
-        global_step.assign_add(1)
-        frame_idx += 1
-        epsilon = max(EPSILON_FINAL, EPSILON_START - frame_idx / EPSILON_DECAY_LAST_FRAME)
+    device = "gpu:0" if tfe.num_gpus() else "cpu:0"
+    print("Using device: %s" % device)
+    with tf.device(device):
+        optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE)
 
-        reward = agent.play_step(net, epsilon, device='')
-        if reward is not None:
-            total_rewards.append(reward)
-            speed = (frame_idx - ts_frame) / (time.time() - ts)
-            ts_frame = frame_idx
-            ts = time.time()
-            mean_reward = np.mean(total_rewards[-100:])
-            print("%d: done %d games, mean reward %.3f, eps %.2f, speed %.2f f/s" % (
-                frame_idx, len(total_rewards), mean_reward, epsilon,
-                speed
-            ))
-            if best_mean_reward is None or best_mean_reward < mean_reward:
-                net.save(args.env + "-best.dat")
-                if best_mean_reward is not None:
-                    print("Best mean reward updated %.3f -> %.3f, model saved" % (best_mean_reward, mean_reward))
-                best_mean_reward = mean_reward
-            if mean_reward > args.reward:
-                print("Solved in %d frames!" % frame_idx)
-                break
+        while True:
+            with tf.device('/cpu:0'):
+                global_step.assign_add(1)
+            frame_idx += 1
+            epsilon = max(EPSILON_FINAL, EPSILON_START - frame_idx / EPSILON_DECAY_LAST_FRAME)
 
-        with tf.contrib.summary.record_summaries_every_n_global_steps(5000):
-            tf.contrib.summary.scalar("epsilon", epsilon, step=global_step)
-            tf.contrib.summary.scalar("speed", speed, step=global_step)
-            tf.contrib.summary.scalar("reward_100", mean_reward, step=global_step)
-            # tf.contrib.summary.scalar("reward", reward, step=global_step)
+            reward = agent.play_step(net, epsilon)
 
-        if len(buffer) < REPLAY_START_SIZE:
-            continue
+            if reward is not None:
+                total_rewards.append(reward)
+                speed = (frame_idx - ts_frame) / (time.time() - ts)
+                ts_frame = frame_idx
+                ts = time.time()
+                mean_reward = np.mean(total_rewards[-100:])
+                print("%d: done %d games, mean reward %.3f, eps %.2f, speed %.2f f/s" % (
+                    frame_idx, len(total_rewards), mean_reward, epsilon,
+                    speed
+                ))
+                if best_mean_reward is None or best_mean_reward < mean_reward:
+                    net.save(args.env + "-best.dat")
+                    if best_mean_reward is not None:
+                        print("Best mean reward updated %.3f -> %.3f, model saved" % (best_mean_reward, mean_reward))
+                    best_mean_reward = mean_reward
+                if mean_reward > args.reward:
+                    print("Solved in %d frames!" % frame_idx)
+                    break
+            # continue
+            with tf.contrib.summary.record_summaries_every_n_global_steps(5000):
+                tf.contrib.summary.scalar("epsilon", epsilon, step=global_step)
+                tf.contrib.summary.scalar("speed", speed, step=global_step)
+                tf.contrib.summary.scalar("reward_100", mean_reward, step=global_step)
+                # tf.contrib.summary.scalar("reward", reward, step=global_step)
 
-        if frame_idx % SYNC_TARGET_FRAMES == 0:
-            del target_net
-            target_net = tf.keras.models.clone_model(net)
-            target_net.set_weights(net.get_weights())
+            if len(buffer) < REPLAY_START_SIZE:
+                continue
 
-        batch = buffer.sample(BATCH_SIZE)
-        grads = calc_loss(batch, net, target_net)
-        optimizer.apply_gradients(zip(grads, net.trainable_variables), global_step=global_step)
+            if frame_idx % SYNC_TARGET_FRAMES == 0:
+                del target_net
+                target_net = tf.keras.models.clone_model(net)
+                target_net.set_weights(net.get_weights())
+
+            batch = buffer.sample(BATCH_SIZE)
+            grads = calc_loss(batch, net, target_net)
+            optimizer.apply_gradients(zip(grads, net.trainable_variables), global_step=global_step)
