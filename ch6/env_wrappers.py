@@ -107,8 +107,8 @@ class ScaledFloatFrame(gym.ObservationWrapper):
 
 
 class BufferWrapper(gym.ObservationWrapper):
-    # def __init__(self, env, n_steps, dtype=np.uint8):
-    def __init__(self, env, n_steps, dtype=np.float32):
+    def __init__(self, env, n_steps, dtype=np.uint8):
+    # def __init__(self, env, n_steps, dtype=np.float32):
         super(BufferWrapper, self).__init__(env)
         self.dtype = dtype
         old_space = env.observation_space
@@ -138,6 +138,5 @@ def make_env(env_name):
     # env = ImageToPyTorch(env)
     env = BufferWrapper(env, 4)
     # env = PyTorchToTF(env)
-    # print(env.observation_space.shape)
     env = ScaledFloatFrame(env)
     return env
