@@ -13,6 +13,8 @@ tf.enable_eager_execution()
 
 DEFAULT_ENV_NAME = "PongNoFrameskip-v4"
 MEAN_REWARD_BOUND = 19.5
+# DEFAULT_ENV_NAME = "BreakoutDeterministic-v4"
+# MEAN_REWARD_BOUND = 300.0
 
 GAMMA = 0.99
 BATCH_SIZE = 32
@@ -58,6 +60,7 @@ class ExperienceBuffer:
 
 @tfe.defun
 def get_next_action(net, state):
+    # state_a = tf.expand_dims(tf.cast(state, tf.float32) / 255.0, axis=0)
     state_a = tf.expand_dims(state, axis=0)
     q_vals_v = net(state_a)
     return tf.argmax(q_vals_v, axis = 1)
@@ -98,10 +101,12 @@ def compute_loss(net, target_net, states, actions, rewards, dones, next_states):
     action_row_indices_v = tf.range(tf.shape(actions)[0])
     actions_v = tf.stack([action_row_indices_v, actions], axis=1)
 
+    # next_state_values = tf.reduce_max(target_net(tf.cast(next_states, tf.float32) / 255.0), axis=1)
     next_state_values = tf.reduce_max(target_net(next_states), axis=1)
 
     expected_state_action_values = dones * next_state_values * GAMMA + rewards
 
+    # state_action_v = net(tf.cast(states, tf.float32) / 255.0)
     state_action_v = net(states)
     state_action_v = tf.gather_nd(state_action_v, actions_v)
 
