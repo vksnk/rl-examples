@@ -97,27 +97,21 @@ class Agent:
         return done_reward
 
 @tfe.defun
-def compute_loss(net, target_net, states, actions, rewards, dones, next_states):
-    action_row_indices_v = tf.range(tf.shape(actions)[0])
-    actions_v = tf.stack([action_row_indices_v, actions], axis=1)
-
-    # next_state_values = tf.reduce_max(target_net(tf.to_float(next_states) / 255.0), axis=1)
-    next_state_values = tf.reduce_max(target_net(next_states), axis=1)
-    expected_state_action_values = dones * next_state_values * GAMMA + rewards
-
-    # state_action_v = net(tf.to_float(states) / 255.0)
-    state_action_v = net(states)
-    state_action_v = tf.gather_nd(state_action_v, actions_v)
-
-    loss_value = tf.reduce_mean(tf.squared_difference(state_action_v, expected_state_action_values))
-
-    return loss_value
-
-def calc_loss(batch, net, target_net):
-    states, actions, rewards, dones, next_states = batch
-
+def calc_loss(net, target_net, states, actions, rewards, dones, next_states):
     with tf.GradientTape() as tape:
-        loss_value = compute_loss(net, target_net, states, actions, rewards, dones, next_states)
+        action_row_indices_v = tf.range(tf.shape(actions)[0])
+        actions_v = tf.stack([action_row_indices_v, actions], axis=1)
+
+        # next_state_values = tf.reduce_max(target_net(tf.to_float(next_states) / 255.0), axis=1)
+        next_state_values = tf.reduce_max(target_net(next_states), axis=1)
+        expected_state_action_values = dones * next_state_values * GAMMA + rewards
+
+        # state_action_v = net(tf.to_float(states) / 255.0)
+        state_action_v = net(states)
+        state_action_v = tf.gather_nd(state_action_v, actions_v)
+
+        loss_value = tf.reduce_mean(tf.squared_difference(state_action_v, expected_state_action_values))
+        # loss_value = tf.losses.huber_loss(state_action_v, expected_state_action_values)
 
     return tape.gradient(loss_value, net.trainable_variables) 
 
@@ -222,6 +216,6 @@ if __name__ == "__main__":
                 target_net = tf.keras.models.clone_model(net)
                 target_net.set_weights(net.get_weights())
 
-            batch = buffer.sample(BATCH_SIZE)
-            grads = calc_loss(batch, net, target_net)
+            states, actions, rewards, dones, next_states = buffer.sample(BATCH_SIZE)
+            grads = calc_loss(net, target_net, states, actions, rewards, dones, next_states)
             optimizer.apply_gradients(zip(grads, net.trainable_variables), global_step=global_step)
